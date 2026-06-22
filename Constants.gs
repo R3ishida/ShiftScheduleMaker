@@ -16,7 +16,10 @@ var SHEET = {
   CALENDAR: 'カレンダー',
   SUMMARY: '集計',
   PERSONAL: '個人別',
-  LOG: 'ログ'
+  LOG: 'ログ',
+  CONFIRMED_SHIFT: '確定シフト',      // ← 新規：確定シフト
+  HISTORY: '履歴',                     // ← 新規：過去データ履歴
+  STATISTICS: '統計'                   // ← 新規：統計情報
 };
 
 // ─────────────────────────────────────────────
@@ -85,6 +88,29 @@ var COL_LOG = {
 };
 
 // ─────────────────────────────────────────────
+// 「確定シフト」列定義（新規）
+// ─────────────────────────────────────────────
+var COL_CONFIRMED = {
+  DATE: 1,
+  WEEKDAY: 2,
+  A: 3,
+  B: 4,
+  NOTE: 5
+};
+
+// ─────────────────────────────────────────────
+// 「履歴」列定義（新規）
+// ─────────────────────────────────────────────
+var COL_HISTORY = {
+  YEAR_MONTH: 1,  // '2026-06' 形式
+  DATE: 2,
+  WEEKDAY: 3,
+  A: 4,
+  B: 5,
+  UPDATED_AT: 6   // 最終更新日時
+};
+
+// ─────────────────────────────────────────────
 // シフト種別
 // ─────────────────────────────────────────────
 var SHIFT_A = 'A';   // 準夜勤
@@ -105,6 +131,15 @@ var DEFAULTS = {
   RANDOM_SEED: 42,           // 乱数シード
   TIMEZONE: 'Asia/Tokyo',
   VALIDATE_REQUESTS: true    // 申請チェックの実施（イベント月などは OFF にする）
+};
+
+// ─────────────────────────────────────────────
+// JSON 保存設定（新規）
+// ─────────────────────────────────────────────
+var JSON_CONFIG = {
+  FOLDER_NAME: 'ShiftScheduleMaker_Data',  // Drive 内のフォルダ名
+  FILE_PREFIX: 'shift_data_',              // ファイル名プレフィックス
+  OVERWRITE: true                          // 同名ファイルがあれば上書き
 };
 
 // ─────────────────────────────────────────────
@@ -157,4 +192,4 @@ var ROTATION_GAP_DAYS = 3;
 // ─────────────────────────────────────────────
 // 日本の祝日カレンダー ID（CalendarApp 用）
 // ─────────────────────────────────────────────
-var JAPAN_HOLIDAY_CALENDAR_ID = 'ja.japanese#holiday@group.v.calendar.google.com';
+var JAPAN_HOLIDAY_CALENDAR_ID = 'ja.japanese.official#holiday@group.v.calendar.google.com';
