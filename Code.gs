@@ -3,11 +3,28 @@
  * メニューUIとエントリポイント。
  *
  * メニュー「シフト表」:
+ *   【生成】
  *   - 当月分を生成
  *   - 任意月を生成（プロンプトで年月入力）
+ *
+ *   【確定シフト操作】← 新規
+ *   - 確定シフトから再生成（手動編集後の反映）
+ *   - 確定シフトを JSON に保存
+ *   - JSON から確定シフトを復元
+ *
+ *   【出力】
  *   - PDF を Drive に保存
- *   - 設定シートを初期化
- *   - テンプレシートを初期化（ヘッダーだけ用意）
+ *   - JSON バックアップを作成
+ *
+ *   【申請管理】
+ *   - 申請を再チェック
+ *   - 申請Formを作成/更新（対象月）
+ *   - 申請シートを再構築
+ *
+ *   【設定】
+ *   - テンプレシートを初期化（初回のみ）
+ *   - 設定シートを既定値で埋める
+ *   - 設定シートの不足キーを補う
  */
 
 // ─────────────────────────────────────────────
@@ -19,8 +36,16 @@ function onOpen() {
     .addItem('当月分を生成', 'menuGenerateCurrent')
     .addItem('任意の月を生成…', 'menuGenerateForMonth')
     .addSeparator()
+    .addItem('確定シフトから再生成', 'menuRegenerateFromConfirmed')
+    .addItem('確定シフトを JSON に保存', 'menuSaveConfirmedAsJson')
+    .addItem('JSON から確定シフトを復元', 'menuLoadConfirmedFromJson')
+    .addSeparator()
     .addItem('申請を再チェック', 'menuValidateRequests')
     .addItem('PDF を Drive に保存', 'menuExportPdf')
+    .addItem('JSON バックアップを作成', 'menuBackupAllAsJson')
+    .addSeparator()
+    .addItem('統計を生成', 'menuGenerateStatistics')
+    .addItem('統計ダッシュボードを表示', 'menuShowStatisticsDashboard')
     .addSeparator()
     .addItem('テンプレシートを初期化（初回のみ）', 'menuInitTemplates')
     .addItem('申請Formを作成/更新（対象月）', 'menuCreateApplicationForm')
@@ -98,6 +123,129 @@ function menuExportPdf() {
   }
 }
 
+// ─────────────────────────────────────────────
+// 確定シフト操作（新規）
+// ─────────────────────────────────────────────
+function menuRegenerateFromConfirmed() {
+  var ui = SpreadsheetApp.getUi();
+  var cfg = loadConfig();
+  var year = cfg.targetYearMonth.year;
+  var month = cfg.targetYearMonth.month;
+
+  try {
+    // 確定シフトを読み込み
+    var confirmedAssignments = loadConfirmedShifts();
+    if (!confirmedAssignments) {
+      ui.alert('エラー', '「確定シフト」シートにデータがありません', ui.ButtonSet.OK);
+      return;
+    }
+
+    // コンテキストを構築（前月実績などは通常通り）
+    var members = loadMembers();
+    var prevAssignments = loadPrevAssignments();
+    var holidays = loadHolidays(year, month);
+    var targetTable = loadTargetTable();
+
+    // 確定シフトのデータから最小限のコンテキストを構築
+    var ctx = buildContextForConfirmedShift_(year, month, members, holidays);
+
+    // 確定シフト用の結果オブジェクトを作成
+    var result = {
+      status: 'OK',
+      assignments: confirmedAssignments,
+      stats: computeStats_(ctx, { byMember: buildByMemberFromAssignments_(confirmedAssignments, ctx) }),
+      score: 0,
+      hardViolations: [],
+      elapsedMs: 0,
+      ctx: ctx
+    };
+
+    // 出力を書き込み（確定シフトは上書きしない）
+    writeCalendarSheet_(ctx, result);
+    writeSummarySheet_(ctx, result);
+    writePersonalSheet_(ctx, result);
+    appendLog_(ctx, result);
+
+    ui.alert('再生成完了', 'カレンダー・集計・個人別を確定シフトから再生成しました。', ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('エラー', String(e) + (e.stack ? '\n\n' + e.stack : ''), ui.ButtonSet.OK);
+    Logger.log(e);
+  }
+}
+
+function menuSaveConfirmedAsJson() {
+  var ui = SpreadsheetApp.getUi();
+  var cfg = loadConfig();
+  var ym = cfg.targetYearMonth.year + '-' + pad2_(cfg.targetYearMonth.month);
+
+  try {
+    var result = saveConfirmedShiftAsJson(ym);
+    ui.alert('保存完了',
+      'ファイル: ' + result.fileName + '\n' +
+      '記録数: ' + result.recordCount,
+      ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('エラー', String(e), ui.ButtonSet.OK);
+  }
+}
+
+function menuLoadConfirmedFromJson() {
+  var ui = SpreadsheetApp.getUi();
+  var cfg = loadConfig();
+  var ym = cfg.targetYearMonth.year + '-' + pad2_(cfg.targetYearMonth.month);
+
+  try {
+    var result = loadConfirmedShiftFromJson(ym);
+    ui.alert('復元完了',
+      '対象月: ' + result.yearMonth + '\n' +
+      '記録数: ' + result.recordCount,
+      ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('エラー', String(e), ui.ButtonSet.OK);
+  }
+}
+
+function menuBackupAllAsJson() {
+  var ui = SpreadsheetApp.getUi();
+  var cfg = loadConfig();
+  var ym = cfg.targetYearMonth.year + '-' + pad2_(cfg.targetYearMonth.month);
+
+  try {
+    backupAllAsJson(ym);
+    ui.alert('バックアップ完了', '確定シフトと履歴を JSON に保存しました。', ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('エラー', String(e), ui.ButtonSet.OK);
+  }
+}
+
+// ─────────────────────────────────────────────
+// 統計機能（新規）
+// ─────────────────────────────────────────────
+function menuGenerateStatistics() {
+  generateStatistics();
+}
+
+function menuShowStatisticsDashboard() {
+  var ui = SpreadsheetApp.getUi();
+  try {
+    var html = HtmlService.createHtmlOutput(
+      '<p style="text-align:center;padding:20px;font-size:16px;">ダッシュボードを開いています...</p>'
+    ).setWidth(100).setHeight(50);
+    ui.showModalDialog(html, 'ダッシュボード');
+
+    // 実際には、Web App として作成する別の方法を使用
+    // または、新しいウィンドウで以下の URL にアクセス:
+    var currentUrl = ScriptApp.getService().getUrl();
+    var msg = 'HTML ダッシュボードを開きます。\n\n以下の URL にアクセスしてください：\n\n' +
+              currentUrl + '\n\n（ブラウザの新規タブで開かれます）';
+
+    ui.alert('統計ダッシュボード', msg, ui.ButtonSet.OK);
+  } catch (e) {
+    var ui = SpreadsheetApp.getUi();
+    ui.alert('エラー', String(e), ui.ButtonSet.OK);
+  }
+}
+
 function menuInitTemplates() {
   var ui = SpreadsheetApp.getUi();
   var resp = ui.alert('テンプレシートを初期化',
@@ -140,7 +288,8 @@ function menuAddMissingConfigKeys() {
     ['試行回数（貪欲）', DEFAULTS.GREEDY_TRIES],
     ['局所探索 上限秒数', DEFAULTS.LOCAL_SEARCH_LIMIT_SEC],
     ['ランダムシード', 'auto'],
-    ['申請チェック', DEFAULTS.VALIDATE_REQUESTS ? 'ON' : 'OFF']
+    ['申請チェック', DEFAULTS.VALIDATE_REQUESTS ? 'ON' : 'OFF'],
+    ['前月実績を履歴から自動抽出', 'OFF']
   ];
   var missing = allDefaults.filter(function (kv) { return !existingKeys[kv[0]]; });
 
@@ -174,7 +323,8 @@ function menuFillDefaults() {
     ['試行回数（貪欲）', DEFAULTS.GREEDY_TRIES],
     ['局所探索 上限秒数', DEFAULTS.LOCAL_SEARCH_LIMIT_SEC],
     ['ランダムシード', 'auto'],
-    ['申請チェック', DEFAULTS.VALIDATE_REQUESTS ? 'ON' : 'OFF']
+    ['申請チェック', DEFAULTS.VALIDATE_REQUESTS ? 'ON' : 'OFF'],
+    ['前月実績を履歴から自動抽出', 'OFF']
   ];
   sh.getRange(1, 1, rows.length, 2).setValues(rows);
   sh.getRange(1, 1, 1, 2).setFontWeight('bold').setBackground(COLOR.HEADER_BG);
@@ -188,6 +338,9 @@ function menuFillDefaults() {
 function generateSchedule_(year, month) {
   var ui = SpreadsheetApp.getUi();
   try {
+    // 過去月シートを自動統合（YYYY-MM形式のシートから履歴に追加）
+    autoIntegratePastMonthData();
+
     // 設定を先に読み、申請チェックの実施可否を決める
     var config = loadConfig();
     config.targetYearMonth = { year: year, month: month };
@@ -308,4 +461,101 @@ function initTemplateSheets_() {
   ensureSheet_(SHEET.SUMMARY);
   ensureSheet_(SHEET.PERSONAL);
   ensureSheet_(SHEET.LOG);
+  ensureSheet_(SHEET.CONFIRMED_SHIFT);    // ← 新規
+  ensureSheet_(SHEET.HISTORY);            // ← 新規
+  ensureSheet_(SHEET.STATISTICS);         // ← 新規
+}
+
+// ─────────────────────────────────────────────
+// ヘルパー関数
+// ─────────────────────────────────────────────
+function pad2_(n) { return (n < 10 ? '0' : '') + n; }
+
+function getSheetOrNull_(name) {
+  return SpreadsheetApp.getActive().getSheetByName(name);
+}
+
+function ensureSheet_(name) {
+  var ss = SpreadsheetApp.getActive();
+  var sh = ss.getSheetByName(name);
+  if (!sh) sh = ss.insertSheet(name);
+  return sh;
+}
+
+function parseYearMonth_(value) {
+  if (value instanceof Date) {
+    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+  }
+  var s = String(value || '').trim();
+  var m = s.match(/^(\d{4})[\-\/\.](\d{1,2})$/);
+  if (m) return { year: Number(m[1]), month: Number(m[2]) };
+  throw new Error('対象年月の書式が不正です: ' + s + '（例: 2026-06）');
+}
+
+// ─────────────────────────────────────────────
+// 確定シフト用のコンテキスト構築（簡易版）
+// ─────────────────────────────────────────────
+function buildContextForConfirmedShift_(year, month, members, holidays) {
+  var daysInMonth = new Date(year, month, 0).getDate();
+
+  var days = [];
+  for (var d = 0; d < daysInMonth; d++) {
+    var date = new Date(year, month - 1, d + 1);
+    var ds = Utilities.formatDate(date, DEFAULTS.TIMEZONE, 'yyyy-MM-dd');
+    var weekday = date.getDay();
+    var isHoliday = !!holidays[ds];
+    var isWeekend = (weekday === 0 || weekday === 6);
+    days.push({
+      index: d,
+      date: ds,
+      weekday: weekday,
+      weekdayLabel: '日月火水木金土'.charAt(weekday),
+      isHoliday: isHoliday,
+      isWeekend: isWeekend,
+      isWeekendOrHoliday: isWeekend || isHoliday
+    });
+  }
+
+  var memberMap = {};
+  var memberIds = [];
+  for (var i = 0; i < members.length; i++) {
+    var m = members[i];
+    memberMap[m.id] = {
+      id: m.id,
+      name: m.name,
+      availDays: {},
+      availCount: daysInMonth
+    };
+    memberIds.push(m.id);
+  }
+
+  return {
+    year: year,
+    month: month,
+    daysInMonth: daysInMonth,
+    days: days,
+    memberIds: memberIds,
+    memberMap: memberMap,
+    excludedByMember: {},
+    rotationDaysGlobal: {},
+    config: {}
+  };
+}
+
+// ─────────────────────────────────────────────
+// byDay → byMember に変換（簡易版）
+// ─────────────────────────────────────────────
+function buildByMemberFromAssignments_(assignments, ctx) {
+  var byMember = {};
+  ctx.memberIds.forEach(function (id) {
+    byMember[id] = [];
+  });
+
+  for (var d = 0; d < assignments.byDay.length; d++) {
+    var slot = assignments.byDay[d];
+    if (slot.A) byMember[slot.A].push(d);
+    if (slot.B) byMember[slot.B].push(d);
+  }
+
+  return byMember;
 }
